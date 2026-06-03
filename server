@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""
+jterminal — browser-based terminal, deploy on Render.
+
+Set TOKEN env variable in Render dashboard.
+Open https://your-app.onrender.com → enter token → get a bash shell.
+From there: ssh, scp, rsync to any machine on the internet.
+
+Install: pip3 install aiohttp
+"""
+
+import asyncio, os, pty, struct, fcntl, termios, json, time, pathlib, uuid
+from aiohttp import web, WSMsgType
+
+TOKEN      = os.environ.get('TOKEN', '')
+PORT       = int(os.environ.get('PORT', 8080))
+UPLOAD_DIR = pathlib.Path('/tmp/jterm')
+FILE_TTL   = 300  # 5 min — files older than this are wiped by cleanup task
+
+# ── Embedded HTML ─────────────────────────────────────────────────────────────
+
+HTML = r"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>jterminal</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"/>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0d1117; color:#e6edf3; font-family:monospace; height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+
+  /* Auth screen */
+  #auth { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; gap:16px; }
+  #auth h1 { font-size:1.4rem; color:#58a6ff; letter-spacing:2px; }
+  #auth p  { color:#8b949e; font-size:13px; }
+  #auth .row { display:flex; gap:8px; }
+  #auth input { background:#161b22; border:1px solid #30363d; color:#e6edf3; padding:8px 12px; border-radius:6px; font-size:14px; width:280px; outline:none; }
+  #auth input:focus { border-color:#58a6ff; }
+  #auth button { background:#238636; border:none; color:white; padding:8px 18px; border-radius:6px; cursor:pointer; font-size:14px; }
+  #auth button:hover { background:#2ea043; }
+  #auth .err { color:#f85149; font-size:13px; display:none; }
+
+  /* Toolbar */
+  #toolbar { background:#161b22; border-bottom:1px solid #30363d; padding:6px 12px; display:none; align-items:center; gap:10px; flex-shrink:0; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#3fb950; display:inline-block; }
+  .sep { color:#30363d; }
+  .btn { background:#21262d; border:1px solid #30363d; color:#e6edf3; padding:3px 10px; border-radius:4px; cursor:pointer; font-size:12px; text-decoration:none; }
+  .btn:hover { background:#30363d; }
+  #file-list { font-size:12px; color:#8b949e; flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  #file-list a { color:#58a6ff; margin-right:8px; }
+
+  /* Terminal */
+  #term-wrap { flex:1; padding:6px; overflow:hidden; display:none; }
+  .xterm { height:100%; }
+  .xterm-viewport { overflow-y:hidden !important; }
+
+  /* Key hint */
+  #keyhint { position:fixed; bottom:8px; right:12px; font-size:11px; color:#484f58; pointer-events:none; }
+</style>
+</head>
+<body>
+
+<div id="auth">
+  <h1>⚡ jterminal</h1>
+  <p>Browser terminal · jump to any machine</p>
+  <div class="row">
+    <input type="password" id="tok" placeholder="Enter token…" autocomplete="off"/>
+    <button onclick="connect()">Connect</button>
+  </div>
+  <div class="err" id="err">Wrong token.</div>
+</div>
+
+<div id="toolbar">
+  <span class="dot"></span>
+  <span style="color:#8b949e;font-size:12px">jterminal</span>
+  <span class="sep">|</span>
+  <input type="file" id="fInput" style="display:none" multiple onchange="uploadFiles(this)"/>
+  <button class="btn" onclick="document.getElementById('fInput').click()">⬆ Upload</button>
+  <span id="file-list"></span>
+  <span class="sep" style="margin-left:auto">|</span>
+  <span style="font-size:11px;color:#484f58">SSH keys wipe on disconnect</span>
+</div>
+
+<div id="term-wrap"></div>
+<div id="keyhint">drag & drop files to upload</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+<script>
+let ws, term, fit, token;
+const enc = new TextEncoder();
+
+function connect() {
+  token = document.getElementById('tok').value.trim();
+  if (!token) return;
+
+  term = new Terminal({
+    cursorBlink: true,
+    fontSize: 14,
+    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+    theme: { background:'#0d1117', foreground:'#e6edf3', cursor:'#e6edf3',
+             selectionBackground:'#264f78', black:'#484f58', brightBlack:'#6e7681' }
+  });
+  fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+
+  document.getElementById('auth').style.display     = 'none';
+  document.getElementById('toolbar').style.display  = 'flex';
+  document.getElementById('term-wrap').style.display = 'block';
+
+  term.open(document.getElementById('term-wrap'));
+  fit.fit();
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen    = () => sendResize();
+  ws.onmessage = e  => term.write(new Uint8Array(e.data));
+  ws.onerror   = () => showErr();
+  ws.onclose   = ()  => {
+    term.write('\r\n\x1b[31m── disconnected ──\x1b[0m\r\n');
+    document.querySelector('.dot').style.background = '#f85149';
+  };
+
+  term.onData(d => { if (ws.readyState === 1) ws.send(enc.encode(d)); });
+
+  window.addEventListener('resize', () => { fit.fit(); sendResize(); });
+
+  // Drag-drop upload
+  document.body.addEventListener('dragover', e => e.preventDefault());
+  document.body.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadFileList(e.dataTransfer.files);
+  });
+}
+
+function showErr() {
+  document.getElementById('auth').style.display = 'flex';
+  document.getElementById('toolbar').style.display = 'none';
+  document.getElementById('term-wrap').style.display = 'none';
+  document.getElementById('err').style.display = 'block';
+  if (term) { term.dispose(); term = null; }
+}
+
+function sendResize() {
+  if (ws && ws.readyState === 1)
+    ws.send(JSON.stringify({ type:'resize', cols:term.cols, rows:term.rows }));
+}
+
+async function uploadFiles(input) { await uploadFileList(input.files); input.value=''; }
+
+async function uploadFileList(files) {
+  for (const file of files) {
+    const form = new FormData();
+    form.append('file', file);
+    const r = await fetch(`/upload?token=${encodeURIComponent(token)}`, { method:'POST', body:form });
+    if (r.ok) {
+      const d = await r.json();
+      term.write(`\r\n\x1b[32m[uploaded → /tmp/jterm/${d.filename}]\x1b[0m\r\n`);
+      if (d.is_key) term.write(`\x1b[33m[hint: chmod 600 /tmp/jterm/${d.filename}]\x1b[0m\r\n`);
+    }
+  }
+  refreshFiles();
+}
+
+async function refreshFiles() {
+  const r = await fetch(`/files?token=${encodeURIComponent(token)}`);
+  const files = await r.json();
+  const el = document.getElementById('file-list');
+  el.innerHTML = files.map(f =>
+    `<a href="/download/${encodeURIComponent(f)}?token=${encodeURIComponent(token)}" class="btn" style="font-size:11px">⬇ ${f}</a>`
+  ).join('');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('tok').addEventListener('keydown', e => { if (e.key==='Enter') connect(); });
+});
+</script>
+</body>
+</html>"""
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def auth(request):
+    return request.rel_url.query.get('token') == TOKEN
+
+# ── PTY helpers ───────────────────────────────────────────────────────────────
+
+def set_winsize(fd, rows, cols):
+    winsize = struct.pack('HHHH', rows, cols, 0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+
+# ── WebSocket terminal ────────────────────────────────────────────────────────
+
+async def ws_handler(request):
+    if not auth(request):
+        return web.Response(status=401, text='Bad token\n')
+
+    ws = web.WebSocketResponse(heartbeat=20)
+    await ws.prepare(request)
+
+    master_fd, slave_fd = pty.openpty()
+    set_winsize(master_fd, 24, 80)
+
+    env = {**os.environ, 'TERM': 'xterm-256color', 'HOME': '/root',
+           'USER': 'root', 'SHELL': '/bin/bash'}
+    proc = await asyncio.create_subprocess_exec(
+        '/bin/bash', '--login',
+        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+        close_fds=True, env=env,
+    )
+    os.close(slave_fd)
+
+    loop    = asyncio.get_event_loop()
+    pty_q   = asyncio.Queue()
+
+    def on_pty_readable():
+        try:
+            data = os.read(master_fd, 4096)
+            pty_q.put_nowait(('data', data))
+        except OSError:
+            pty_q.put_nowait(('eof', None))
+            loop.remove_reader(master_fd)
+
+    loop.add_reader(master_fd, on_pty_readable)
+
+    async def pty_to_ws():
+        while True:
+            kind, data = await pty_q.get()
+            if kind == 'eof':
+                break
+            try:
+                await ws.send_bytes(data)
+            except Exception:
+                break
+
+    async def ws_to_pty():
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                try:
+                    d = json.loads(msg.data)
+                    if d.get('type') == 'resize':
+                        set_winsize(master_fd, d['rows'], d['cols'])
+                except Exception:
+                    pass
+            elif msg.type == WSMsgType.BINARY:
+                try:
+                    os.write(master_fd, msg.data)
+                except OSError:
+                    break
+            elif msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
+                break
+
+    reader = asyncio.create_task(pty_to_ws())
+    writer = asyncio.create_task(ws_to_pty())
+
+    await asyncio.wait([reader, writer], return_when=asyncio.FIRST_COMPLETED)
+
+    reader.cancel()
+    writer.cancel()
+
+    try: proc.kill()
+    except ProcessLookupError: pass
+
+    try: loop.remove_reader(master_fd)
+    except Exception: pass
+
+    try: os.close(master_fd)
+    except OSError: pass
+
+    wipe_uploads()
+    return ws
+
+# ── File endpoints ────────────────────────────────────────────────────────────
+
+KEY_EXTS = {'.pem', '.key', '.rsa', '.ppk', '.pub', '.id_rsa', ''}
+
+def wipe_uploads():
+    if UPLOAD_DIR.exists():
+        for f in UPLOAD_DIR.glob('*'):
+            try: f.unlink()
+            except: pass
+
+async def upload_handler(request):
+    if not auth(request):
+        return web.Response(status=401)
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    data     = await request.post()
+    file     = data['file']
+    filename = pathlib.Path(file.filename).name  # strip path, keep name only
+    dest     = UPLOAD_DIR / filename
+    dest.write_bytes(file.file.read())
+    is_key = dest.suffix in KEY_EXTS or 'key' in filename.lower() or 'id_rsa' in filename.lower()
+    return web.json_response({'filename': filename, 'is_key': is_key})
+
+async def download_handler(request):
+    if not auth(request):
+        return web.Response(status=401)
+    filename = pathlib.Path(request.match_info['filename']).name
+    path = UPLOAD_DIR / filename
+    if not path.exists():
+        return web.Response(status=404, text='Not found')
+    return web.FileResponse(path, headers={
+        'Content-Disposition': f'attachment; filename="{filename}"'
+    })
+
+async def files_handler(request):
+    if not auth(request):
+        return web.Response(status=401)
+    if not UPLOAD_DIR.exists():
+        return web.json_response([])
+    return web.json_response([f.name for f in UPLOAD_DIR.glob('*') if f.is_file()])
+
+# ── Static + health ───────────────────────────────────────────────────────────
+
+async def index_handler(request):
+    return web.Response(content_type='text/html', text=HTML)
+
+async def health_handler(request):
+    return web.json_response({'status': 'ok'})
+
+# ── Background cleanup ────────────────────────────────────────────────────────
+
+async def cleanup_task():
+    while True:
+        await asyncio.sleep(60)
+        if UPLOAD_DIR.exists():
+            now = time.time()
+            for f in UPLOAD_DIR.glob('*'):
+                try:
+                    if now - f.stat().st_mtime > FILE_TTL:
+                        f.unlink()
+                except Exception:
+                    pass
+
+# ── Start ─────────────────────────────────────────────────────────────────────
+
+async def start():
+    if not TOKEN:
+        print("[!] TOKEN env variable not set — set it in Render dashboard.")
+        import sys; sys.exit(1)
+
+    app = web.Application(client_max_size=100 * 1024 * 1024)
+    app.router.add_get ('/',                   index_handler)
+    app.router.add_get ('/ws',                 ws_handler)
+    app.router.add_post('/upload',             upload_handler)
+    app.router.add_get ('/download/{filename}', download_handler)
+    app.router.add_get ('/files',              files_handler)
+    app.router.add_get ('/_health',            health_handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, '0.0.0.0', PORT).start()
+
+    print(f"[+] jterminal running on port {PORT}")
+    asyncio.create_task(cleanup_task())
+    await asyncio.Event().wait()
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(start())
+    except KeyboardInterrupt:
+        print('\n[*] Stopped.')
