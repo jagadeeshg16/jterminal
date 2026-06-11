@@ -222,9 +222,13 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('tok').value = saved;
     document.getElementById('rememberTok').checked = true;
   }
-  // Assign a persistent client ID for this browser
-  if (!localStorage.getItem('jterm_client_id')) {
-    localStorage.setItem('jterm_client_id', crypto.randomUUID());
+  // Assign a persistent client ID — expires after 90 days, then rotates
+  const CID_KEY = 'jterm_client_id', CID_EXP = 'jterm_client_exp';
+  const now = Date.now(), days90 = 90 * 24 * 60 * 60 * 1000;
+  const expired = !localStorage.getItem(CID_KEY) || (parseInt(localStorage.getItem(CID_EXP) || 0) < now);
+  if (expired) {
+    localStorage.setItem(CID_KEY, crypto.randomUUID());
+    localStorage.setItem(CID_EXP, now + days90);
   }
   document.getElementById('tok').addEventListener('keydown', e => { if (e.key==='Enter') connect(); });
 });
