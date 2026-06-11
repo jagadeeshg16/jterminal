@@ -66,10 +66,10 @@ HTML = r"""<!DOCTYPE html>
   <div class="row">
     <input type="password" id="tok" placeholder="Enter token…" autocomplete="off"/>
     <button onclick="connect()">Connect</button>
-    <label style="font-size:11px;color:#8b949e;margin-left:8px">
-      <input type="checkbox" id="rememberTok" style="margin-right:4px"/>Remember
-    </label>
   </div>
+  <label style="font-size:11px;color:#8b949e;margin-top:8px">
+    <input type="checkbox" id="rememberTok" style="margin-right:4px"/>Remember token
+  </label>
   <div class="err" id="err">Wrong token.</div>
 </div>
 
