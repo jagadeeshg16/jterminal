@@ -275,6 +275,11 @@ async def ws_handler(request):
     )
     os.close(slave_fd)
 
+    # Load history file into the session after bash starts
+    await asyncio.sleep(0.2)
+    init = f'export HISTFILE="{hist_file}"; export HISTSIZE=5000; export HISTFILESIZE=5000; history -r; export PROMPT_COMMAND="history -a"\n'
+    os.write(master_fd, init.encode())
+
     loop    = asyncio.get_event_loop()
     pty_q   = asyncio.Queue()
 
