@@ -138,6 +138,7 @@ function connect() {
   term.attachCustomKeyEventHandler(e => {
     if (e.type !== 'keydown') return true;
     if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+      e.preventDefault();
       const sel = term.getSelection();
       if (sel) navigator.clipboard.writeText(sel).catch(() => {});
       return false;
