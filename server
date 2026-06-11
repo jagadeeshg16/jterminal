@@ -135,6 +135,7 @@ function connect() {
 
   // Ctrl+Shift+C = copy selection, Ctrl+Shift+V = paste (prevent devtools)
   term.attachCustomKeyEventHandler(e => {
+    if (e.type !== 'keydown') return true;
     if (e.ctrlKey && e.shiftKey && e.key === 'C') {
       const sel = term.getSelection();
       if (sel) navigator.clipboard.writeText(sel).catch(() => {});
