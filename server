@@ -66,6 +66,9 @@ HTML = r"""<!DOCTYPE html>
   <div class="row">
     <input type="password" id="tok" placeholder="Enter token…" autocomplete="off"/>
     <button onclick="connect()">Connect</button>
+    <label style="font-size:11px;color:#8b949e;margin-left:8px">
+      <input type="checkbox" id="rememberTok" style="margin-right:4px"/>Remember
+    </label>
   </div>
   <div class="err" id="err">Wrong token.</div>
 </div>
@@ -93,6 +96,11 @@ const enc = new TextEncoder();
 function connect() {
   token = document.getElementById('tok').value.trim();
   if (!token) return;
+  // Save or clear token from localStorage
+  if (document.getElementById('rememberTok').checked)
+    localStorage.setItem('jterm_token', token);
+  else
+    localStorage.removeItem('jterm_token');
 
   term = new Terminal({
     cursorBlink: true,
@@ -124,6 +132,22 @@ function connect() {
   };
 
   term.onData(d => { if (ws.readyState === 1) ws.send(enc.encode(d)); });
+
+  // Ctrl+Shift+C = copy selection, Ctrl+Shift+V = paste (prevent devtools)
+  term.attachCustomKeyEventHandler(e => {
+    if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+      const sel = term.getSelection();
+      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      return false;
+    }
+    if (e.ctrlKey && e.shiftKey && e.key === 'V') {
+      navigator.clipboard.readText().then(t => {
+        if (ws.readyState === 1) ws.send(enc.encode(t));
+      }).catch(() => {});
+      return false;
+    }
+    return true;
+  });
 
   window.addEventListener('resize', () => { fit.fit(); sendResize(); });
 
@@ -174,6 +198,12 @@ async function refreshFiles() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Restore saved token
+  const saved = localStorage.getItem('jterm_token');
+  if (saved) {
+    document.getElementById('tok').value = saved;
+    document.getElementById('rememberTok').checked = true;
+  }
   document.getElementById('tok').addEventListener('keydown', e => { if (e.key==='Enter') connect(); });
 });
 </script>
@@ -203,8 +233,12 @@ async def ws_handler(request):
     master_fd, slave_fd = pty.openpty()
     set_winsize(master_fd, 24, 80)
 
+    hist_file = '/tmp/jterm/.bash_history'
+    pathlib.Path('/tmp/jterm').mkdir(exist_ok=True)
     env = {**os.environ, 'TERM': 'xterm-256color', 'HOME': '/root',
-           'USER': 'root', 'SHELL': '/bin/bash'}
+           'USER': 'root', 'SHELL': '/bin/bash',
+           'HISTFILE': hist_file, 'HISTSIZE': '5000', 'HISTFILESIZE': '5000',
+           'PROMPT_COMMAND': 'history -a'}
     proc = await asyncio.create_subprocess_exec(
         '/bin/bash', '--login',
         stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
