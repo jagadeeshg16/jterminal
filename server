@@ -360,8 +360,14 @@ async def download_handler(request):
     path = UPLOAD_DIR / filename
     if not path.exists():
         return web.Response(status=404, text='Not found')
+    import mimetypes
+    mime, _ = mimetypes.guess_type(filename)
+    # Force text types to open inline; unknown/binary types download
+    text_exts = {'.txt','.log','.sh','.py','.js','.json','.yaml','.yml','.conf','.cfg','.md','.xml','.csv','.ini','.env'}
+    disposition = 'inline' if (path.suffix in text_exts or (mime and mime.startswith('text'))) else 'attachment'
     return web.FileResponse(path, headers={
-        'Content-Disposition': f'inline; filename="{filename}"'
+        'Content-Disposition': f'{disposition}; filename="{filename}"',
+        'Content-Type': mime or 'application/octet-stream',
     })
 
 async def files_handler(request):
@@ -369,7 +375,7 @@ async def files_handler(request):
         return web.Response(status=401)
     if not UPLOAD_DIR.exists():
         return web.json_response([])
-    return web.json_response([f.name for f in UPLOAD_DIR.glob('*') if f.is_file()])
+    return web.json_response([f.name for f in UPLOAD_DIR.glob('*') if f.is_file() and not f.name.startswith('.')])
 
 # ── Static + health ───────────────────────────────────────────────────────────
 
