@@ -120,7 +120,8 @@ function connect() {
   fit.fit();
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  const clientId = localStorage.getItem('jterm_client_id') || 'default';
+  ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}&cid=${encodeURIComponent(clientId)}`);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen    = () => sendResize();
@@ -214,6 +215,10 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('tok').value = saved;
     document.getElementById('rememberTok').checked = true;
   }
+  // Assign a persistent client ID for this browser
+  if (!localStorage.getItem('jterm_client_id')) {
+    localStorage.setItem('jterm_client_id', crypto.randomUUID());
+  }
   document.getElementById('tok').addEventListener('keydown', e => { if (e.key==='Enter') connect(); });
 });
 </script>
@@ -244,10 +249,10 @@ async def ws_handler(request):
     set_winsize(master_fd, 24, 80)
 
     import hashlib
-    ip = request.remote or 'default'
-    ip_hash = hashlib.sha256(ip.encode()).hexdigest()[:12]
+    cid = request.rel_url.query.get('cid', request.remote or 'default')
+    cid_hash = hashlib.sha256(cid.encode()).hexdigest()[:12]
     pathlib.Path('/tmp/jterm').mkdir(exist_ok=True)
-    hist_file = f'/tmp/jterm/.history_{ip_hash}'
+    hist_file = f'/tmp/jterm/.history_{cid_hash}'
     env = {**os.environ, 'TERM': 'xterm-256color', 'HOME': '/root',
            'USER': 'root', 'SHELL': '/bin/bash',
            'HISTFILE': hist_file, 'HISTSIZE': '5000', 'HISTFILESIZE': '5000',
