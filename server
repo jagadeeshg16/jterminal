@@ -137,6 +137,12 @@ function connect() {
   // Ctrl+Shift+C = copy selection
   term.attachCustomKeyEventHandler(e => {
     if (e.type !== 'keydown') return true;
+    // Ctrl+C = always SIGINT (never copy)
+    if (e.ctrlKey && !e.shiftKey && e.key === 'c') {
+      if (ws.readyState === 1) ws.send(enc.encode('\x03'));
+      return false;
+    }
+    // Ctrl+Shift+C = copy selection
     if (e.ctrlKey && e.shiftKey && e.key === 'C') {
       e.preventDefault();
       const sel = term.getSelection();
