@@ -361,7 +361,7 @@ async def download_handler(request):
     if not path.exists():
         return web.Response(status=404, text='Not found')
     return web.FileResponse(path, headers={
-        'Content-Disposition': f'attachment; filename="{filename}"'
+        'Content-Disposition': f'inline; filename="{filename}"'
     })
 
 async def files_handler(request):
