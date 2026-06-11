@@ -233,8 +233,10 @@ async def ws_handler(request):
     master_fd, slave_fd = pty.openpty()
     set_winsize(master_fd, 24, 80)
 
-    hist_file = '/tmp/jterm/.bash_history'
+    import hashlib
+    token_hash = hashlib.sha256(request.rel_url.query.get('token','').encode()).hexdigest()[:12]
     pathlib.Path('/tmp/jterm').mkdir(exist_ok=True)
+    hist_file = f'/tmp/jterm/.history_{token_hash}'
     env = {**os.environ, 'TERM': 'xterm-256color', 'HOME': '/root',
            'USER': 'root', 'SHELL': '/bin/bash',
            'HISTFILE': hist_file, 'HISTSIZE': '5000', 'HISTFILESIZE': '5000',
