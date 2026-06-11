@@ -56,6 +56,17 @@ HTML = r"""<!DOCTYPE html>
 
   /* Key hint */
   #keyhint { position:fixed; bottom:8px; right:12px; font-size:11px; color:#484f58; pointer-events:none; }
+
+  /* History panel */
+  #hist-panel { position:absolute; top:36px; right:12px; width:480px; max-height:360px;
+    background:#161b22; border:1px solid #30363d; border-radius:6px;
+    display:none; flex-direction:column; z-index:100; box-shadow:0 8px 24px #010409; }
+  #hist-panel header { padding:8px 12px; border-bottom:1px solid #30363d; display:flex; align-items:center; justify-content:space-between; }
+  #hist-panel header span { color:#8b949e; font-size:12px; }
+  #hist-panel header button { background:none; border:none; color:#8b949e; cursor:pointer; font-size:14px; }
+  #hist-list { overflow-y:auto; flex:1; padding:4px 0; }
+  #hist-list div { padding:4px 12px; font-size:12px; color:#e6edf3; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #hist-list div:hover { background:#21262d; color:#58a6ff; }
 </style>
 </head>
 <body>
@@ -81,7 +92,16 @@ HTML = r"""<!DOCTYPE html>
   <button class="btn" onclick="document.getElementById('fInput').click()">⬆ Upload</button>
   <span id="file-list"></span>
   <span class="sep" style="margin-left:auto">|</span>
+  <button class="btn" onclick="toggleHistory(event)">📋 History</button>
   <span style="font-size:11px;color:#484f58">SSH keys wipe on disconnect</span>
+</div>
+
+<div id="hist-panel">
+  <header>
+    <span>Command History</span>
+    <button onclick="document.getElementById('hist-panel').style.display='none'">✕</button>
+  </header>
+  <div id="hist-list"></div>
 </div>
 
 <div id="term-wrap"></div>
@@ -204,6 +224,24 @@ async function uploadFileList(files) {
     }
   }
   refreshFiles();
+}
+
+async function toggleHistory(e) {
+  const panel = document.getElementById('hist-panel');
+  if (panel.style.display === 'flex') { panel.style.display = 'none'; return; }
+  const r = await fetch(`/history?token=${encodeURIComponent(token)}&cid=${encodeURIComponent(localStorage.getItem('jterm_client_id')||'')}`);
+  const lines = await r.json();
+  const list = document.getElementById('hist-list');
+  list.innerHTML = lines.slice().reverse().map(l =>
+    `<div title="${l.replace(/"/g,'&quot;')}" onclick="pasteCmd(this.title)">${l}</div>`
+  ).join('');
+  panel.style.display = 'flex';
+  document.getElementById('hist-panel').style.top = (e.target.getBoundingClientRect().bottom + 4) + 'px';
+}
+
+function pasteCmd(cmd) {
+  if (ws && ws.readyState === 1) ws.send(enc.encode(cmd));
+  document.getElementById('hist-panel').style.display = 'none';
 }
 
 async function refreshFiles() {
@@ -346,6 +384,20 @@ export PROMPT_COMMAND="history -a"
     wipe_uploads()
     return ws
 
+# ── History endpoint ─────────────────────────────────────────────────────────
+
+async def history_handler(request):
+    if not auth(request):
+        return web.Response(status=401)
+    import hashlib
+    cid = request.rel_url.query.get('cid', request.remote or 'default')
+    cid_hash = hashlib.sha256(cid.encode()).hexdigest()[:12]
+    hist_file = pathlib.Path(f'/tmp/jterm/.history_{cid_hash}')
+    if not hist_file.exists():
+        return web.json_response([])
+    lines = [l.strip() for l in hist_file.read_text().splitlines() if l.strip()]
+    return web.json_response(lines)
+
 # ── File endpoints ────────────────────────────────────────────────────────────
 
 KEY_EXTS = {'.pem', '.key', '.rsa', '.ppk', '.pub', '.id_rsa', ''}
@@ -427,6 +479,7 @@ async def start():
     app.router.add_post('/upload',             upload_handler)
     app.router.add_get ('/download/{filename}', download_handler)
     app.router.add_get ('/files',              files_handler)
+    app.router.add_get ('/history',            history_handler)
     app.router.add_get ('/_health',            health_handler)
 
     runner = web.AppRunner(app)
