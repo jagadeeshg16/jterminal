@@ -134,6 +134,7 @@ function connect() {
   term.onData(d => { if (ws.readyState === 1) ws.send(enc.encode(d)); });
 
   // Ctrl+Shift+C = copy selection, Ctrl+Shift+V = paste (prevent devtools)
+  // Ctrl+Shift+C = copy selection
   term.attachCustomKeyEventHandler(e => {
     if (e.type !== 'keydown') return true;
     if (e.ctrlKey && e.shiftKey && e.key === 'C') {
@@ -141,13 +142,14 @@ function connect() {
       if (sel) navigator.clipboard.writeText(sel).catch(() => {});
       return false;
     }
-    if (e.ctrlKey && e.shiftKey && e.key === 'V') {
-      navigator.clipboard.readText().then(t => {
-        if (ws.readyState === 1) ws.send(enc.encode(t));
-      }).catch(() => {});
-      return false;
-    }
     return true;
+  });
+
+  // Ctrl+Shift+V = paste via paste event (prevents double-paste from browser native handler)
+  document.getElementById('term-wrap').addEventListener('paste', e => {
+    e.preventDefault();
+    const text = e.clipboardData.getData('text');
+    if (ws && ws.readyState === 1) ws.send(enc.encode(text));
   });
 
   window.addEventListener('resize', () => { fit.fit(); sendResize(); });
