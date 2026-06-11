@@ -187,13 +187,20 @@ async function uploadFiles(input) { await uploadFileList(input.files); input.val
 
 async function uploadFileList(files) {
   for (const file of files) {
+    term.write(`\r\n\x1b[33m[uploading ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)…]\x1b[0m`);
     const form = new FormData();
     form.append('file', file);
-    const r = await fetch(`/upload?token=${encodeURIComponent(token)}`, { method:'POST', body:form });
-    if (r.ok) {
-      const d = await r.json();
-      term.write(`\r\n\x1b[32m[uploaded → /tmp/jterm/${d.filename}]\x1b[0m\r\n`);
-      if (d.is_key) term.write(`\x1b[33m[hint: chmod 600 /tmp/jterm/${d.filename}]\x1b[0m\r\n`);
+    try {
+      const r = await fetch(`/upload?token=${encodeURIComponent(token)}`, { method:'POST', body:form });
+      if (r.ok) {
+        const d = await r.json();
+        term.write(`\r\x1b[2K\x1b[32m[uploaded → /tmp/jterm/${d.filename}]\x1b[0m\r\n`);
+        if (d.is_key) term.write(`\x1b[33m[hint: chmod 600 /tmp/jterm/${d.filename}]\x1b[0m\r\n`);
+      } else {
+        term.write(`\r\x1b[2K\x1b[31m[upload failed: ${r.status} ${r.statusText}]\x1b[0m\r\n`);
+      }
+    } catch(e) {
+      term.write(`\r\x1b[2K\x1b[31m[upload error: ${e.message}]\x1b[0m\r\n`);
     }
   }
   refreshFiles();
@@ -393,7 +400,7 @@ async def start():
         print("[!] TOKEN env variable not set — set it in Render dashboard.")
         import sys; sys.exit(1)
 
-    app = web.Application(client_max_size=100 * 1024 * 1024)
+    app = web.Application(client_max_size=500 * 1024 * 1024)
     app.router.add_get ('/',                   index_handler)
     app.router.add_get ('/ws',                 ws_handler)
     app.router.add_post('/upload',             upload_handler)
