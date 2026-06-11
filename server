@@ -264,21 +264,27 @@ async def ws_handler(request):
     cid_hash = hashlib.sha256(cid.encode()).hexdigest()[:12]
     pathlib.Path('/tmp/jterm').mkdir(exist_ok=True)
     hist_file = f'/tmp/jterm/.history_{cid_hash}'
+    # Write a silent rcfile that sets up history
+    rc_file = f'/tmp/jterm/.rc_{cid_hash}'
+    with open(rc_file, 'w') as f:
+        f.write(f'''
+source /etc/bash.bashrc 2>/dev/null || true
+[ -f ~/.bashrc ] && source ~/.bashrc 2>/dev/null || true
+export HISTFILE="{hist_file}"
+export HISTSIZE=5000
+export HISTFILESIZE=5000
+history -r
+export PROMPT_COMMAND="history -a"
+''')
+
     env = {**os.environ, 'TERM': 'xterm-256color', 'HOME': '/root',
-           'USER': 'root', 'SHELL': '/bin/bash',
-           'HISTFILE': hist_file, 'HISTSIZE': '5000', 'HISTFILESIZE': '5000',
-           'PROMPT_COMMAND': 'history -a'}
+           'USER': 'root', 'SHELL': '/bin/bash'}
     proc = await asyncio.create_subprocess_exec(
-        '/bin/bash', '--login',
+        '/bin/bash', '--rcfile', rc_file,
         stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
         close_fds=True, env=env,
     )
     os.close(slave_fd)
-
-    # Load history file into the session after bash starts
-    await asyncio.sleep(0.2)
-    init = f'export HISTFILE="{hist_file}"; export HISTSIZE=5000; export HISTFILESIZE=5000; history -r; export PROMPT_COMMAND="history -a"\n'
-    os.write(master_fd, init.encode())
 
     loop    = asyncio.get_event_loop()
     pty_q   = asyncio.Queue()
